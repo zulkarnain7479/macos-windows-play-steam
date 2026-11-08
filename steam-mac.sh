@@ -179,8 +179,10 @@ install_highball() {
   curl -fL --retry 3 --progress-bar -o "$TMP/Highball.dmg" \
     "https://github.com/$HB_REPO/releases/download/v$latest/Highball.dmg" || die "Не скачался Highball."
   mkdir "$TMP/mnt"
-  hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$TMP/mnt" "$TMP/Highball.dmg" >/dev/null \
-    || die "Не открылся образ Highball.dmg."
+  # macOS 27 пишет, что hdiutil attach устарел, но команда работает и есть во всех macOS 14+.
+  local out
+  out=$(hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$TMP/mnt" "$TMP/Highball.dmg" 2>&1) \
+    || die "Не открылся образ Highball.dmg: $out"
   [ -d "$TMP/mnt/Highball.app" ] || die "В образе нет Highball.app."
   verify_app "$TMP/mnt/Highball.app"
 
