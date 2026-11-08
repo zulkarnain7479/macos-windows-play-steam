@@ -240,6 +240,15 @@ ready_env() {
   return 1
 }
 
+# Скачанный движок — папка в engines/. Недокачанный лежит там же, но с точкой в начале имени.
+engine_installed() {
+  local d
+  for d in "$HB_HOME"/engines/*/; do
+    if [ -d "$d" ]; then return 0; fi
+  done
+  return 1
+}
+
 steam_env() {
   local d
   for d in "$HB_HOME"/bottles/*/; do
@@ -261,7 +270,11 @@ wait_for_env() {
     sleep 10
     waited=$((waited + 10))
     if [ $((waited % 300)) -eq 0 ]; then
-      info "Жду среду Windows уже $((waited / 60)) мин. Ошибка в окне Highball — нажмите «Get started» ещё раз."
+      if engine_installed; then
+        info "Движок скачан, Highball готовит среду Windows. Прошло $((waited / 60)) мин."
+      else
+        info "Прошло $((waited / 60)) мин. Если в окне Highball видна кнопка «Get started», нажмите её."
+      fi
     fi
     if [ "$waited" -ge 5400 ]; then
       die "Среда Windows не появилась за 90 минут. Посмотрите, что пишет Highball, и запустите установку снова."
