@@ -1,8 +1,10 @@
 #!/bin/bash
 # steam-mac.sh — Windows-игры из Steam на Mac с чипом Apple (M1 и новее) через Highball.
 #
-#   bash steam-mac.sh install        ставит Rosetta 2, Highball, среду Windows и Steam для Windows
+#   bash steam-mac.sh install        ставит Rosetta 2, Highball, среду Windows и Steam для Windows,
+#                                    потом показывает, как идёт установка, пока игра не встанет
 #   bash steam-mac.sh play [appid]   запускает игру; без appid — Machine Party (4108000)
+#   bash steam-mac.sh watch [appid]  только следит за установкой Steam и игры, ничего не меняет
 #
 # Подробно — README.md.
 #
@@ -52,6 +54,7 @@ Windows-игры из Steam на Mac с чипом Apple.
 
   bash steam-mac.sh install        установить всё нужное (по умолчанию)
   bash steam-mac.sh play [appid]   запустить игру (без appid — $GAME_NAME_DEFAULT, $GAME_APPID_DEFAULT)
+  bash steam-mac.sh watch [appid]  следить за установкой Steam и игры
 EOF
 }
 
@@ -390,6 +393,83 @@ finish_hint() {
 EOF
 }
 
+# --- наблюдатель ------------------------------------------------------------------------------
+# Только читает: папки Highball, процессы, журнал обновления Steam и запись об установке игры.
+# Ничего не меняет, поэтому окно с ним можно закрыть в любой момент.
+
+steam_running() { pgrep -fi 'steam[.]exe' >/dev/null; }
+
+# Значение ключа из файла Steam вида  "StateFlags"  "4".
+acf_value() { awk -F'"' -v k="$2" '$2 == k { print $4; exit }' "$1" 2>/dev/null; }
+
+# Как идёт обновление самого Steam: «41%», «offline» или пусто, если он сейчас ничего не качает.
+steam_update_state() {
+  local log="$1/$STEAM_DIR_IN_ENV/logs/bootstrap_log.txt" last nums got total
+  if [ ! -f "$log" ]; then return 0; fi
+  last=$(tail -n 1 "$log")
+  case "$last" in
+    *"needs to be online"*) echo offline ;;
+    *"Downloading update ("*)
+      nums=$(printf '%s' "$last" | sed -E 's/.*\(([0-9,]+) of ([0-9,]+) KB\).*/\1 \2/' | tr -d ',')
+      got=${nums% *}; total=${nums#* }
+      if [ "$total" -gt 0 ] 2>/dev/null; then echo "$((got * 100 / total))%"; fi ;;
+  esac
+}
+
+# Игра в Steam для Windows: none, installed или процент загрузки.
+game_state() {
+  local acf="$1/$STEAM_DIR_IN_ENV/steamapps/appmanifest_$2.acf" got total
+  if [ ! -f "$acf" ]; then echo none; return 0; fi
+  if [ "$(acf_value "$acf" StateFlags)" = 4 ]; then echo installed; return 0; fi
+  got=$(acf_value "$acf" BytesDownloaded); total=$(acf_value "$acf" BytesToDownload)
+  if [ "$total" -gt 0 ] 2>/dev/null; then echo "$((${got:-0} * 100 / total))%"; else echo "0%"; fi
+}
+
+# Одна строка о том, что сейчас происходит. Первое слово — этап, по нему видно смену этапа.
+setup_status() {  # setup_status <appid> <название игры> <сколько секунд Steam не запущен>
+  local env upd game
+  if ! engine_installed; then echo "engine Ждём движок Wine. Нажмите «Get started» в окне Highball, если ещё не нажали."; return; fi
+  if ! ready_env >/dev/null; then echo "env Highball готовит среду Windows."; return; fi
+  if ! env=$(steam_env); then echo "steam Ставится Steam для Windows."; return; fi
+  game=$(game_state "$env" "$1")
+  case "$game" in
+    installed) echo "done Готово: $2 установлена. Играть: кнопка Play в Highball или «Играть в Machine Party.command»."; return ;;
+    none) ;;
+    *) echo "game $2 качается: $game."; return ;;
+  esac
+  if [ -f "$env/$STEAM_DIR_IN_ENV/config/loginusers.vdf" ]; then
+    echo "login Вход в Steam выполнен. Установите игру: Библиотека → $2 → «Установить»."; return
+  fi
+  upd=$(steam_update_state "$env")
+  if [ "$upd" = offline ]; then echo "offline Steam не смог скачать обновление. Нажмите OK в его окне и запустите установку снова."; return; fi
+  if [ "$3" -ge 30 ]; then echo "closed Steam закрыт, вход ещё не выполнен. Откройте его: кнопка Open Steam в Highball."; return; fi
+  if [ -n "$upd" ]; then echo "update Steam обновляет себя: $upd."; return; fi
+  echo "wait Steam запускается. Когда появится окно входа, войдите в свой аккаунт."
+}
+
+watch_setup() {  # watch_setup <appid> <название игры>
+  local appid=$1 name=$2 line phase last_phase="" last_line="" last_print=0 now start down=0
+  bold "Слежу за установкой. Окно можно закрыть в любой момент, установка не прервётся."
+  start=$(date +%s)
+  while :; do
+    if steam_running; then down=0; else down=$((down + 5)); fi
+    line=$(setup_status "$appid" "$name" "$down")
+    phase=${line%% *}
+    now=$(date +%s)
+    # Новый этап — сразу; новый процент того же этапа — не чаще раза в 20 секунд.
+    if [ "$phase" != "$last_phase" ] || { [ "$line" != "$last_line" ] && [ $((now - last_print)) -ge 20 ]; }; then
+      info "$(date +%H:%M)  ${line#* }"
+      last_phase=$phase; last_line=$line; last_print=$now
+    fi
+    if [ "$phase" = done ]; then return 0; fi
+    if [ $((now - start)) -ge 10800 ]; then
+      info "Слежу уже 3 часа и останавливаюсь. Снова посмотреть: «Статус установки.command»."
+      return 0
+    fi
+    sleep 5
+  done
+}
+
 # --- команды ----------------------------------------------------------------------------------
 
 cmd_install() {
@@ -403,6 +483,17 @@ cmd_install() {
   wait_for_env
   install_steam
   finish_hint
+  watch_setup "$GAME_APPID_DEFAULT" "$GAME_NAME_DEFAULT"
+}
+
+cmd_watch() {
+  local appid=${1:-$GAME_APPID_DEFAULT} name
+  case "$appid" in *[!0-9]*|"") die "appid — это число из адреса игры в магазине Steam." ;; esac
+  name="игра $appid"
+  if [ "$appid" = "$GAME_APPID_DEFAULT" ]; then name=$GAME_NAME_DEFAULT; fi
+  hb_app_path >/dev/null || die "Highball не установлен. Сначала запустите «Установить.command»."
+  HB_HOME=$(hb_home)
+  watch_setup "$appid" "$name"
 }
 
 cmd_play() {
@@ -425,6 +516,7 @@ cmd_play() {
 case "${1:-install}" in
   install) cmd_install ;;
   play) shift; cmd_play "$@" ;;
+  watch|status) shift; cmd_watch "$@" ;;
   -h|--help|help) usage ;;
   *) usage; exit 1 ;;
 esac
