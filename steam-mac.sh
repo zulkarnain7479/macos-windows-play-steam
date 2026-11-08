@@ -319,7 +319,53 @@ install_steam() {
   fi
   quit_mac_steam
   info "Открываю Steam для Windows. Первый запуск качает сам Steam: 15–25 минут, окно может выглядеть зависшим."
-  open_link "highball://open/launcher/steam?t=$TOKEN"
+  open_steam_watched "$env"
+}
+
+# Загрузчик Steam под Rosetta иногда виснет на первом же запросе и через минуту пишет
+# «Steam needs to be online to update», хотя интернет есть. Помогает перезапуск, его и делаем.
+# Найдено на чистой установке 08.11: со второго запуска Steam сразу начал качаться.
+open_steam_watched() {
+  local env=$1 log before tries=0 waited new
+  log="$env/$STEAM_DIR_IN_ENV/logs/bootstrap_log.txt"
+  while :; do
+    before=0
+    if [ -f "$log" ]; then before=$(wc -l < "$log" | tr -d ' '); fi
+    open_link "highball://open/launcher/steam?t=$TOKEN"
+    waited=0
+    while [ "$waited" -lt 100 ]; do
+      sleep 5
+      waited=$((waited + 5))
+      new=$(tail -n +"$((before + 1))" "$log" 2>/dev/null || true)
+      case "$new" in
+        *"Downloading update ("*) info "Steam качает обновление, всё идёт как надо."; return 0 ;;
+        *"needs to be online"*) break ;;
+      esac
+    done
+    case "$new" in
+      *"needs to be online"*) ;;
+      *) return 0 ;;
+    esac
+    tries=$((tries + 1))
+    if [ "$tries" -gt 2 ]; then
+      warn "Steam трижды не смог скачать обновление. Проверьте интернет, нажмите OK в окне Steam и запустите установку снова."
+      return 0
+    fi
+    warn "Steam завис на первой загрузке, это известный сбой. Перезапускаю его (попытка $tries из 2)."
+    stop_steam "$env"
+  done
+}
+
+# Закрывает Steam в среде, как кнопка OK в окне ошибки, и ждёт, пока Wine остановится.
+stop_steam() {
+  local pattern i
+  pattern="bottles/$(basename "$1")/drive_c/Program Files .x86./Steam/steam.exe"
+  pkill -f "$pattern" 2>/dev/null || true
+  for i in $(seq 1 30); do
+    if ! pgrep -f "$pattern" >/dev/null; then break; fi
+    sleep 1
+  done
+  sleep 5
 }
 
 game_installed() {  # game_installed <appid>
